@@ -1,9 +1,0 @@
-# Root nixpacks config: install the whole workspace, start the auth service.
-[phases.setup]
-nixPkgs = ["nodejs_22"]
-
-[phases.install]
-cmds = ["npm install --workspaces --include-workspace-root --no-audit --no-fund"]
-
-[start]
-cmd = "node services/auth/src/server.js"
