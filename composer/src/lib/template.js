@@ -78,15 +78,43 @@ ${inner}
   <table align="center" border="0" cellpadding="0" cellspacing="0" style="width:700px;"><tbody>
   <tr><td align="center" valign="top" style="padding:0px 10px;">
     <table width="100%" align="center" border="0" cellpadding="0" cellspacing="0"><tbody>
-    <tr><td align="center" style="color:#595959;font-family:Verdana,Geneva,sans-serif;font-size:12px;line-height:1.2;padding:10px 40px;">
+    <tr><td align="center" style="color:#595959;font-family:Verdana,Geneva,sans-serif;font-size:11px;line-height:1.2;padding:10px 40px;">
       <p style="margin:0;">${escapeHtml(org)} | ${escapeHtml(line1)} | ${escapeHtml(city)}, ${escapeHtml(state)} ${escapeHtml(postal)} US</p>
     </td></tr>
-    <tr><td align="center" style="color:#595959;font-family:Verdana,Geneva,sans-serif;font-size:12px;line-height:1.2;padding:10px 40px;">
-      <p style="margin:0;">[[UNSUBSCRIBE_LINK]] | [[UPDATE_PROFILE_LINK]]</p>
+    <tr><td align="center" style="color:#595959;font-family:Verdana,Geneva,sans-serif;font-size:11px;line-height:1.2;padding:10px 40px;">
+      <p style="margin:0;"> <a href="[[unsubscribe]]" data-track="false">Unsubscribe<span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]] from [[account.organizationName]][[ENDIF]]">&zwnj;</span></a><span> | </span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]]Unsubscribe from all [[partner.companyName]][[ENDIF]]">&zwnj;</span><span><a href="[[updateLink]]" data-track="false">Update Profile</a></span><span> | </span><span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF customPrivacyPolicyUrl]]Our Privacy Policy | [[ENDIF]]">&zwnj;</span><a href="[[aboutCtctLink]]" data-track="false">Constant Contact Data Notice</a></span> </p>
     </td></tr>
     </tbody></table>
   </td></tr></tbody></table>
 </td></tr>
 </tbody></table>
 </body></html>`;
+}
+
+// addTracking: append channel + UTM params to every sl.defendsurviveprepare.com
+// link in the HTML. Idempotent-ish: skips links that already have a query string
+// containing tid= so we don't double-append.
+//
+//   tid=ccm                         -> Constant Contact email channel (internal)
+//   utm_source=constantcontact
+//   utm_medium=email
+//   utm_campaign=<vendor id>        -> groups by product/vendor
+//
+// Note: this only tags the branded short-link domain. Whether the params survive
+// to the destination depends on the sl. redirect preserving query strings.
+export function addTracking(html, { vendor } = {}) {
+  if (!html) return html;
+  const campaign = (vendor || 'unknown').toString().trim();
+  const params =
+    `tid=ccm&utm_source=constantcontact&utm_medium=email&utm_campaign=${encodeURIComponent(campaign)}`;
+
+  // Match href="...sl.defendsurviveprepare.com/xxx" (single or double quotes).
+  return html.replace(
+    /(href=["'])(https?:\/\/sl\.defendsurviveprepare\.com\/[^"']*?)(["'])/gi,
+    (m, pre, url, post) => {
+      if (/[?&]tid=/.test(url)) return m; // already tagged
+      const sep = url.includes('?') ? '&' : '?';
+      return `${pre}${url}${sep}${params}${post}`;
+    }
+  );
 }
