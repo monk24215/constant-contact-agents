@@ -51,22 +51,29 @@ function selectName(prop) {
   return prop && prop.select ? prop.select.name : null;
 }
 
-// Query calendar rows at a given Pipeline stage.
-export async function getRowsByStage(stage) {
+// Query campaigns ready to be drafted. Trigger: Status = "draft" AND a CC
+// Campaign ID has not yet been written (so we don't re-draft the same row).
+// Schema is the real "Email Campaign Tracker".
+export async function getReadyRows() {
   const data = await notionFetch(`/databases/${dbId()}/query`, {
     method: 'POST',
     body: {
-      filter: { property: 'Pipeline', select: { equals: stage } },
+      filter: {
+        and: [
+          { property: 'Status', select: { equals: 'draft' } },
+          { property: 'CC Campaign ID', rich_text: { is_empty: true } },
+        ],
+      },
     },
   });
   return (data.results || []).map((page) => ({
     id: page.id,
     url: page.url,
-    name: plain(page.properties['Name']),
-    subject: plain(page.properties['Subject']),
+    subject: plain(page.properties['Subject Line']),   // title
     preheader: plain(page.properties['Preheader']),
-    body: plain(page.properties['Body']),
-    audience: selectName(page.properties['Audience']),
+    body: plain(page.properties['Body Copy']),
+    from: page.properties['From'] ? page.properties['From'].email : null,
+    category: selectName(page.properties['Category']),
     sendDate:
       page.properties['Send Date'] && page.properties['Send Date'].date
         ? page.properties['Send Date'].date.start
@@ -74,11 +81,20 @@ export async function getRowsByStage(stage) {
   }));
 }
 
+// Backward-compat alias so worker.js keeps working.
+export async function getRowsByStage() {
+  return getReadyRows();
+}
+
 // Update a calendar row's properties.
 export async function updateRow(pageId, props) {
   const properties = {};
-  if (props.pipeline)
-    properties['Pipeline'] = { select: { name: props.pipeline } };
+  // Real tracker has no "Pipeline"; the composer records progress via CC IDs +
+  // Agent Notes. Status stays "draft" (a draft now exists in CC) until the
+  // human sends it and the reporter flips it to "sent".
+  if (props.pipeline) {
+    // no-op mapping retained for compatibility
+  }
   if (props.ccCampaignId !== undefined)
     properties['CC Campaign ID'] = {
       rich_text: [{ text: { content: String(props.ccCampaignId) } }],

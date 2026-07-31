@@ -1,9 +1,9 @@
 // worker.js
-// The composer's one job: find calendar rows at "Ready to Build", create a
+// The composer's one job: find campaigns with Status="draft" (no CC id yet), create a
 // draft email campaign in Constant Contact, write the campaign id + link back
 // to Notion, and advance the row to "Drafted in CC".
 //
-// Idempotent-ish: only acts on "Ready to Build" rows, and moves them off that
+// Idempotent: only acts on rows with no CC Campaign ID yet, and writes the id back
 // stage immediately, so re-runs don't double-create.
 
 import { getRowsByStage, updateRow } from './lib/notion.js';
@@ -40,15 +40,15 @@ async function composeOne(row) {
   // FIX #5: don't create empty drafts. A row needs actual body copy.
   if (!row.body || !row.body.trim()) {
     await updateRow(row.id, {
-      notes: 'Skipped: Body is empty. Add copy, then set Pipeline back to "Ready to Build".',
+      notes: 'Skipped: Body Copy is empty. Content agent must fill Body Copy.',
     });
     return { rowId: row.id, skipped: 'empty body' };
   }
-  const subject = row.subject || row.name || 'Newsletter';
+  const subject = row.subject || 'Newsletter';
   const html = renderEmailHtml({ subject, body: row.body || '', preheader: row.preheader || '' });
 
   // CC campaign names must be unique; suffix with a timestamp.
-  const uniqueName = `${row.name || subject} [${new Date().toISOString().slice(0, 16)}]`;
+  const uniqueName = `${subject} [${new Date().toISOString().slice(0, 16)}]`;
 
   const created = await createEmailCampaign({
     name: uniqueName,
@@ -75,11 +75,10 @@ async function composeOne(row) {
     : null;
 
   await updateRow(row.id, {
-    pipeline: 'Drafted in CC',
     ccCampaignId: campaignId || '',
     ccActivityId: activityId || '',
     ccLink,
-    notes: `Draft created ${new Date().toISOString()}`,
+    notes: `Draft created in Constant Contact ${new Date().toISOString()}. Review and send from CC.`,
   });
 
   return { rowId: row.id, campaignId, activityId };
@@ -98,22 +97,22 @@ export async function runComposer() {
   senderConfig();
   await getValidAccessToken(); // verifies token chain is alive
 
-  const rows = await getRowsByStage('Ready to Build');
+  const rows = await getRowsByStage();
   const results = { processed: 0, errors: [], drafts: [] };
 
   for (const row of rows) {
     try {
       const r = await composeOne(row);
       if (r.skipped) {
-        console.log(`[composer] skipped "${row.name}": ${r.skipped}`);
+        console.log(`[composer] skipped "${row.subject}": ${r.skipped}`);
       } else {
         results.processed++;
         results.drafts.push(r);
-        console.log(`[composer] drafted "${row.name}" -> campaign ${r.campaignId}`);
+        console.log(`[composer] drafted "${row.subject}" -> campaign ${r.campaignId}`);
       }
     } catch (e) {
-      console.error(`[composer] failed on "${row.name}": ${e.message}`);
-      results.errors.push({ row: row.name, error: e.message });
+      console.error(`[composer] failed on "${row.subject}": ${e.message}`);
+      results.errors.push({ row: row.subject, error: e.message });
       // Park the row with an error note so it doesn't silently retry forever.
       try {
         await updateRow(row.id, { notes: `Compose error: ${e.message}`.slice(0, 1900) });
