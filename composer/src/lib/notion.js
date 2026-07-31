@@ -6,7 +6,7 @@
 // We keep this dependency-free (global fetch) to stay simple to deploy.
 
 const NOTION_BASE = 'https://api.notion.com/v1';
-const NOTION_VERSION = '2022-06-28';
+const NOTION_VERSION = '2025-09-03';
 
 function token() {
   const t = process.env.NOTION_TOKEN;
@@ -55,7 +55,7 @@ function selectName(prop) {
 // Campaign ID has not yet been written (so we don't re-draft the same row).
 // Schema is the real "Email Campaign Tracker".
 export async function getReadyRows() {
-  const data = await notionFetch(`/databases/${dbId()}/query`, {
+  const data = await notionFetch(`/data_sources/${dbId()}/query`, {
     method: 'POST',
     body: {
       filter: {
