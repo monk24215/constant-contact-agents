@@ -3,7 +3,7 @@
 // {{BODY}} is injected RAW (Body Copy is authored HTML with its own <p> blocks).
 // {{PREHEADER}} sets the hidden inbox-preview line.
 //
-// Footer + [[trackingImage]] tokens are CC-native.
+// No footer or tracking token in the shell — CC handles those on send.
 
 export function renderEmailHtml({ subject, body, preheader }) {
   const pre = preheader || '';
@@ -18,23 +18,12 @@ export function renderEmailHtml({ subject, body, preheader }) {
 </head>
 <body style="margin:0;padding:0;min-width:100%;background-color:#ffffff;">
 <div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeText(pre)}</div>
-[[trackingImage]]
 <table width="600" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;margin-left:auto;margin-right:auto;background-color:#ffffff;">
   <tr>
     <td align="center" style="padding:21px 22px;">
       <table width="600" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background-color:#ffffff;">
         <tr>
           <td align="left" style="color:#333333;font-family:'PT Sans',Roboto,Arial,sans-serif;font-size:17px;font-weight:400;line-height:2em;letter-spacing:0;text-align:left;word-wrap:break-word;padding:50px 30px;">${bodyHtml}
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding:10px 40px 4px;">
-            <p style="margin:0;font-family:'PT Sans',Roboto,Arial,sans-serif;color:#525252;font-size:10px;line-height:1.4;">Defend Survive Prepare | 760 Farm to Market 1626 | Manchaca, TX 78652 US</p>
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding:0 40px 20px;">
-            <p style="margin:0;font-family:'PT Sans',Roboto,Arial,sans-serif;color:#525252;font-size:11px;line-height:1.4;"> <a href="[[unsubscribe]]" data-track="false">Unsubscribe<span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]] from [[account.organizationName]][[ENDIF]]">&zwnj;</span></a><span> | </span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]]Unsubscribe from all [[partner.companyName]][[ENDIF]]">&zwnj;</span><span><a href="[[updateLink]]" data-track="false">Update Profile</a></span><span> | </span><span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF customPrivacyPolicyUrl]]Our Privacy Policy | [[ENDIF]]">&zwnj;</span><a href="[[aboutCtctLink]]" data-track="false">Constant Contact Data Notice</a></span> </p>
           </td>
         </tr>
       </table>
@@ -56,9 +45,19 @@ function escapeText(s) {
 // Any existing style attribute on a <p> is replaced. Other <p> attributes are dropped
 // so the paragraph style is uniform across the email.
 const P_STYLE = "margin-bottom:25px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+// The sign-off paragraph ("Stay Safe...") gets extra space above it (from the CTA)
+// and below it (before the P.S.): 31px top (+25% of 25) and 36px bottom (+45% of 25).
+const SIGNOFF_STYLE = "margin-top:31px;margin-bottom:36px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
 export function styleParagraphs(html) {
   if (!html) return html;
-  return html.replace(/<p\b[^>]*>/gi, `<p style="${P_STYLE}">`);
+  // Apply the uniform style to every <p> first...
+  html = html.replace(/<p\b[^>]*>/gi, `<p style="${P_STYLE}">`);
+  // ...then give the sign-off paragraph (the one containing "Stay Safe") the wider spacing.
+  html = html.replace(
+    /<p style="[^"]*">((?:(?!<\/p>)[\s\S])*?Stay Safe[\s\S]*?)<\/p>/i,
+    `<p style="${SIGNOFF_STYLE}">$1</p>`
+  );
+  return html;
 }
 
 export function addTracking(html, { vendor } = {}) {
