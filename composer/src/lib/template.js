@@ -44,20 +44,36 @@ function escapeText(s) {
 // styleParagraphs: force every <p> in the body to carry the exact house style.
 // Any existing style attribute on a <p> is replaced. Other <p> attributes are dropped
 // so the paragraph style is uniform across the email.
-const P_STYLE = "margin-bottom:25px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
-// The sign-off paragraph ("Stay Safe...") gets extra space above it (from the CTA)
-// and below it (before the P.S.): 50px top and 60px bottom — clearly larger than the 25px base.
-const SIGNOFF_STYLE = "margin-top:50px;margin-bottom:60px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+const FONT = "color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+function pStyle(mb, mt) {
+  return `${mt ? `margin-top:${mt}px;` : ''}margin-bottom:${mb}px;${FONT}`;
+}
+// Spacing pattern (from the approved manual edit):
+//   body paragraphs        -> 25px
+//   paragraph before CTA   -> 45px
+//   CTA paragraph          -> 65px
+//   sign-off ("Stay Safe") -> 75px
+//   P.S.                   -> 25px
 export function styleParagraphs(html) {
   if (!html) return html;
-  // Apply the uniform style to every <p> first...
-  html = html.replace(/<p\b[^>]*>/gi, `<p style="${P_STYLE}">`);
-  // ...then give the sign-off paragraph (the one containing "Stay Safe") the wider spacing.
-  html = html.replace(
-    /<p style="[^"]*">((?:(?!<\/p>)[\s\S])*?Stay Safe[\s\S]*?)<\/p>/i,
-    `<p style="${SIGNOFF_STYLE}">$1</p>`
-  );
-  return html;
+  const isPS = (b) => /(^|>)\s*(<[^>]+>\s*)*P\.?\s?S\.?[\s.:]/i.test(b);
+  const isSignoff = (b) => /Stay Safe/i.test(b);
+  const isCTA = (b) => /sl\.defendsurviveprepare\.com/i.test(b) && !isPS(b) && !isSignoff(b);
+
+  // First pass: index every <p> block and locate the CTA.
+  const blocks = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi) || [];
+  const ctaIndex = blocks.findIndex(isCTA);
+
+  // Second pass: rewrite each <p> by its ordinal position.
+  let i = -1;
+  return html.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, (m, inner) => {
+    i++;
+    let mb = 25;
+    if (isSignoff(m)) mb = 75;
+    else if (isCTA(m)) mb = 65;
+    else if (ctaIndex > 0 && i === ctaIndex - 1) mb = 45;
+    return `<p style="${pStyle(mb, 0)}">${inner}</p>`;
+  });
 }
 
 export function addTracking(html, { vendor } = {}) {
