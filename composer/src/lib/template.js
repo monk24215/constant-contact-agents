@@ -15,27 +15,20 @@ export function renderEmailHtml({ subject, body, preheader }) {
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 </head>
-<body style="margin:0;padding:0;min-width:100%;background-color:#474747;">
+<body style="margin:auto;padding:0;max-width:650px;width:100%;background-color:#ffffff;font-family:Roboto,Arial,sans-serif;line-height:2em;font-size:17px;">
 <div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeText(pre)}</div>
-[[trackingImage]]
-<table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#474747;">
+
+<table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#ffffff;">
   <tr>
     <td align="center" style="padding:15px 18px;">
-      <table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:650px;max-width:650px;background-color:#ffffff;">
+      <table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:650px;font-family:Roboto,Arial,sans-serif;line-height:2em;font-size:17px;background-color:#ffffff;">
         <tr>
           <td align="left" style="font-family:Roboto,Arial,sans-serif;color:#3E3E3E;font-size:17px;line-height:2em;word-wrap:break-word;padding:50px 30px;">${bodyHtml}
+          <p>&nbsp;</p>  <p>&nbsp;</p>
           </td>
         </tr>
-        <tr>
-          <td align="center" style="padding:10px 40px 4px;">
-            <p style="margin:0;font-family:Roboto,Arial,sans-serif;color:#525252;font-size:10px;line-height:1.4;">Defend Survive Prepare | 760 Farm to Market 1626 | Manchaca, TX 78652 US</p>
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding:0 40px 20px;">
-            <p style="margin:0;font-family:Roboto,Arial,sans-serif;color:#525252;font-size:11px;line-height:1.4;"> <a href="[[unsubscribe]]" data-track="false">Unsubscribe<span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]] from [[account.organizationName]][[ENDIF]]">&zwnj;</span></a><span> | </span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]]Unsubscribe from all [[partner.companyName]][[ENDIF]]">&zwnj;</span><span><a href="[[updateLink]]" data-track="false">Update Profile</a></span><span> | </span><span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF customPrivacyPolicyUrl]]Our Privacy Policy | [[ENDIF]]">&zwnj;</span><a href="[[aboutCtctLink]]" data-track="false">Constant Contact Data Notice</a></span> </p>
-          </td>
-        </tr>
+     
+       
       </table>
     </td>
   </tr>
