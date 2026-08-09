@@ -46,8 +46,8 @@ function escapeText(s) {
 // so the paragraph style is uniform across the email.
 const P_STYLE = "margin-bottom:25px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
 // The sign-off paragraph ("Stay Safe...") gets extra space above it (from the CTA)
-// and below it (before the P.S.): 31px top (+25% of 25) and 36px bottom (+45% of 25).
-const SIGNOFF_STYLE = "margin-top:31px;margin-bottom:36px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+// and below it (before the P.S.): 41px top (+25% of 25) and 46px bottom (+45% of 25).
+const SIGNOFF_STYLE = "margin-top:41px;margin-bottom:36px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
 export function styleParagraphs(html) {
   if (!html) return html;
   // Apply the uniform style to every <p> first...
