@@ -7,7 +7,7 @@
 
 export function renderEmailHtml({ subject, body, preheader }) {
   const pre = preheader || '';
-  const bodyHtml = body || '';
+  const bodyHtml = styleParagraphs(body || '');
   const title = subject || 'Defend Survive Prepare';
 
   return `<!DOCTYPE html>
@@ -49,6 +49,16 @@ function escapeAttr(s) {
 }
 function escapeText(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+
+// styleParagraphs: force every <p> in the body to carry the exact house style.
+// Any existing style attribute on a <p> is replaced. Other <p> attributes are dropped
+// so the paragraph style is uniform across the email.
+const P_STYLE = "margin-bottom:25px;color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+export function styleParagraphs(html) {
+  if (!html) return html;
+  return html.replace(/<p\b[^>]*>/gi, `<p style="${P_STYLE}">`);
 }
 
 export function addTracking(html, { vendor } = {}) {
