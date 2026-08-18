@@ -1,5 +1,5 @@
 // template.js
-// Renders the PT Sans / 600px white-shell Constant Contact template.
+// Renders the PT Sans / 650px white-shell Constant Contact template.
 // {{BODY}} is injected RAW (Body Copy is authored HTML with its own <p> blocks).
 // {{PREHEADER}} sets the hidden inbox-preview line.
 //
@@ -17,13 +17,18 @@ export function renderEmailHtml({ subject, body, preheader }) {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 </head>
 <body style="margin:0;padding:0;min-width:100%;background-color:#ffffff;">
-<div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeText(pre)}</div>
-<table width="600" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;margin-left:auto;margin-right:auto;background-color:#ffffff;">
-  <tr>
-    <td align="center" style="padding:21px 22px;">
-      <table width="600" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background-color:#ffffff;">
-        <tr>
-          <td align="left" style="color:#333333;font-family:'PT Sans',Roboto,Arial,sans-serif;font-size:17px;font-weight:400;line-height:2em;letter-spacing:0;text-align:left;word-wrap:break-word;padding:50px 30px;">${bodyHtml}
+
+
+<div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;max-height:0; overflow:hidden; mso-hide:all;">${escapeText(pre)}</div>
+<table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:650px;margin-left:auto;margin-right:auto;background-color:#ffffff;border-color:#ffffff;">
+<tbody>
+<tr>
+<td align="center" style="padding:0px 22px;">
+
+<table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:650px;background-color:#ffffff;display:block; border:none; border-collapse:collapse;padding:1%;overflow:hidden;border-color:#ffffff;">
+<tbody>
+<tr>
+<td align="left" style="color:#333333;font-family:'PT Sans',Roboto,Arial,sans-serif;font-size:17px;font-weight:400;line-height:1.7em;letter-spacing:0;text-align:left;word-wrap:break-word;padding:0px 20px;">${bodyHtml}
           </td>
         </tr>
       </table>
