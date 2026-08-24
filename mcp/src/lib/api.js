@@ -2,11 +2,12 @@
 // Thin wrapper over the Constant Contact v3 REST API. Every call goes through
 // getValidAccessToken(), so callers never think about token lifecycle.
 //
-// Copy of composer/src/lib/api.js, with the write helpers (createEmailCampaign,
-// sendTest) REMOVED on purpose. This service is read-only by construction:
-// there is no code path here that can create, modify, or send a campaign, so a
-// misbehaving MCP client cannot touch the live account. Campaign creation stays
-// where the README puts it — in composer/, draft-only.
+// Copy of composer/src/lib/api.js, extended with the write helpers this service
+// needs to create and edit campaigns from an MCP client.
+//
+// Deliberately NOT included: any call that sends to a live list or schedules a
+// send. Creating and editing is reversible; sending 28,000 emails is not. Test
+// sends to explicit addresses are allowed.
 //
 // Base URL: https://api.cc.email/v3
 
@@ -15,7 +16,7 @@ import { getValidAccessToken } from './oauth.js';
 const API_BASE =
   process.env.CONSTANT_CONTACT_BASE_URL || 'https://api.cc.email/v3';
 
-async function ccFetch(path, { query } = {}) {
+async function ccFetch(path, { method = 'GET', body, query } = {}) {
   const token = await getValidAccessToken();
   let url = `${API_BASE}${path}`;
   if (query) {
@@ -24,11 +25,13 @@ async function ccFetch(path, { query } = {}) {
   }
 
   const res = await fetch(url, {
-    method: 'GET',
+    method,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/json',
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
+    body: body ? JSON.stringify(body) : undefined,
   });
 
   const text = await res.text();
@@ -36,7 +39,7 @@ async function ccFetch(path, { query } = {}) {
 
   if (!res.ok) {
     throw new Error(
-      `CC API GET ${path} failed (${res.status}): ${JSON.stringify(data)}`
+      `CC API ${method} ${path} failed (${res.status}): ${JSON.stringify(data)}`
     );
   }
   return data;
@@ -63,6 +66,89 @@ export function getCampaign(campaignId) {
 
 export function getCampaignActivity(activityId) {
   return ccFetch(`/emails/activities/${activityId}`);
+}
+
+// --- Writes -----------------------------------------------------------------
+
+// Create a campaign as a DRAFT. Returns the campaign plus its activity ids.
+export function createEmailCampaign({
+  name,
+  subject,
+  fromName,
+  fromEmail,
+  replyToEmail,
+  htmlContent,
+  physicalAddress,
+  preheader,
+}) {
+  return ccFetch('/emails', {
+    method: 'POST',
+    body: {
+      name,
+      email_campaign_activities: [
+        {
+          format_type: 5, // v3 custom-code HTML format
+          from_name: fromName,
+          from_email: fromEmail,
+          reply_to_email: replyToEmail || fromEmail,
+          subject,
+          ...(preheader ? { preheader } : {}),
+          html_content: htmlContent,
+          physical_address_in_footer: physicalAddress,
+        },
+      ],
+    },
+  });
+}
+
+// Update an existing activity. CC requires the FULL activity object on PUT, so
+// this reads the current one and merges the provided fields over it — otherwise
+// unspecified fields are silently wiped.
+export async function updateCampaignActivity(activityId, changes) {
+  const current = await getCampaignActivity(activityId);
+
+  const merged = {
+    format_type: current.format_type,
+    from_name: changes.fromName ?? current.from_name,
+    from_email: changes.fromEmail ?? current.from_email,
+    reply_to_email: changes.replyToEmail ?? current.reply_to_email,
+    subject: changes.subject ?? current.subject,
+    html_content: changes.htmlContent ?? current.html_content,
+    physical_address_in_footer: current.physical_address_in_footer,
+    ...(current.preheader || changes.preheader
+      ? { preheader: changes.preheader ?? current.preheader }
+      : {}),
+    ...(current.contact_list_ids
+      ? { contact_list_ids: current.contact_list_ids }
+      : {}),
+  };
+
+  return ccFetch(`/emails/activities/${activityId}`, {
+    method: 'PUT',
+    body: merged,
+  });
+}
+
+export function renameCampaign(campaignId, name) {
+  return ccFetch(`/emails/${campaignId}`, {
+    method: 'PATCH',
+    body: { name },
+  });
+}
+
+export function createContactList({ name, description, favorite = false }) {
+  return ccFetch('/contact_lists', {
+    method: 'POST',
+    body: { name, description: description || '', favorite },
+  });
+}
+
+// Test send to explicit addresses. Does NOT touch live lists.
+export function sendTest(activityId, emailAddresses) {
+  return ccFetch(`/emails/activities/${activityId}/tests`, {
+    method: 'POST',
+    body: { email_addresses: emailAddresses },
+  });
 }
 
 // --- Reporting --------------------------------------------------------------

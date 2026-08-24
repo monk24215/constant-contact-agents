@@ -19,13 +19,30 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 import {
-  getAccountSummary,
   getContactLists,
   listCampaigns,
   getCampaign,
   getCampaignActivity,
   getCampaignStats,
+  createEmailCampaign,
+  updateCampaignActivity,
+  renameCampaign,
+  createContactList,
+  sendTest,
 } from './lib/api.js';
+
+// Footer address is legally required on every CC campaign. Read from the same
+// CC_ADDR_* variables the composer uses.
+function physicalAddress() {
+  return {
+    address_line1: process.env.CC_ADDR_LINE1,
+    city: process.env.CC_ADDR_CITY,
+    state_code: process.env.CC_ADDR_STATE,
+    postal_code: process.env.CC_ADDR_POSTAL,
+    country_code: process.env.CC_ADDR_COUNTRY || 'US',
+    organization_name: process.env.CC_ADDR_ORG,
+  };
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -71,17 +88,6 @@ async function run(fn) {
 
 function buildServer() {
   const server = new McpServer({ name: 'constant-contact', version: '1.0.0' });
-
-  server.registerTool(
-    'cc_account_summary',
-    {
-      title: 'Account summary',
-      description:
-        'Constant Contact account summary: company name, contact email, plan.',
-      inputSchema: {},
-    },
-    () => run(() => getAccountSummary())
-  );
 
   server.registerTool(
     'cc_list_contact_lists',
@@ -153,6 +159,113 @@ function buildServer() {
     ({ campaignActivityId }) => run(() => getCampaignStats(campaignActivityId))
   );
 
+  // --- Writes ---------------------------------------------------------------
+
+  server.registerTool(
+    'cc_create_campaign',
+    {
+      title: 'Create campaign (draft)',
+      description:
+        'Create a new email campaign as a DRAFT. Never sends. Returns the campaign id and its activity id, which is what editing and test sends key off.',
+      inputSchema: {
+        name: z
+          .string()
+          .describe('Internal campaign name. Must be unique in the account.'),
+        subject: z.string().describe('Subject line.'),
+        htmlContent: z
+          .string()
+          .describe('Full HTML body. CC custom-code format.'),
+        fromName: z.string().optional().describe('Defaults to CC_FROM_NAME.'),
+        fromEmail: z
+          .string()
+          .optional()
+          .describe('Must be a verified sender. Defaults to CC_FROM_EMAIL.'),
+        replyToEmail: z.string().optional().describe('Defaults to CC_REPLY_TO.'),
+        preheader: z.string().optional().describe('Preview text.'),
+      },
+    },
+    (a) =>
+      run(() =>
+        createEmailCampaign({
+          name: a.name,
+          subject: a.subject,
+          htmlContent: a.htmlContent,
+          preheader: a.preheader,
+          fromName: a.fromName || process.env.CC_FROM_NAME,
+          fromEmail: a.fromEmail || process.env.CC_FROM_EMAIL,
+          replyToEmail:
+            a.replyToEmail || process.env.CC_REPLY_TO || process.env.CC_FROM_EMAIL,
+          physicalAddress: physicalAddress(),
+        })
+      )
+  );
+
+  server.registerTool(
+    'cc_update_campaign_activity',
+    {
+      title: 'Edit campaign content',
+      description:
+        'Edit subject, HTML, sender, or preheader on an existing campaign activity. Only works while the campaign is a draft. Unspecified fields are preserved.',
+      inputSchema: {
+        activityId: z.string().describe('The campaign activity id (UUID).'),
+        subject: z.string().optional(),
+        htmlContent: z.string().optional(),
+        preheader: z.string().optional(),
+        fromName: z.string().optional(),
+        fromEmail: z.string().optional(),
+        replyToEmail: z.string().optional(),
+      },
+    },
+    ({ activityId, ...changes }) =>
+      run(() => updateCampaignActivity(activityId, changes))
+  );
+
+  server.registerTool(
+    'cc_rename_campaign',
+    {
+      title: 'Rename campaign',
+      description: 'Change a campaign internal name.',
+      inputSchema: {
+        campaignId: z.string().describe('The campaign id (UUID).'),
+        name: z.string().describe('New name. Must be unique in the account.'),
+      },
+    },
+    ({ campaignId, name }) => run(() => renameCampaign(campaignId, name))
+  );
+
+  server.registerTool(
+    'cc_create_list',
+    {
+      title: 'Create contact list',
+      description: 'Create a new, empty contact list.',
+      inputSchema: {
+        name: z.string().describe('List name.'),
+        description: z.string().optional(),
+        favorite: z.boolean().optional(),
+      },
+    },
+    (a) => run(() => createContactList(a))
+  );
+
+  server.registerTool(
+    'cc_send_test',
+    {
+      title: 'Send test email',
+      description:
+        'Send a test of a campaign activity to explicit addresses. Does NOT touch live contact lists.',
+      inputSchema: {
+        activityId: z.string().describe('The campaign activity id (UUID).'),
+        emailAddresses: z
+          .array(z.string())
+          .min(1)
+          .max(5)
+          .describe('Recipient addresses for the test.'),
+      },
+    },
+    ({ activityId, emailAddresses }) =>
+      run(() => sendTest(activityId, emailAddresses))
+  );
+
   return server;
 }
 
@@ -162,7 +275,7 @@ const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, service: 'mcp', readOnly: true });
+  res.json({ ok: true, service: 'mcp', writes: 'draft-only' });
 });
 
 app.post('/mcp/:secret', async (req, res) => {
