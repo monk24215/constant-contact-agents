@@ -1,12 +1,13 @@
 // template.js
-// Cleaned Constant Contact template skeleton for Defend Survive Prepare.
-// Redundant nested tables/tbody/duplicate attrs removed; all inline styles that
-// email clients require are kept. Body Copy is injected RAW (DS Copywriter
-// writes full HTML). Footer + [[trackingImage]] tokens are CC-native.
+// Renders the PT Sans / 650px white-shell Constant Contact template.
+// {{BODY}} is injected RAW (Body Copy is authored HTML with its own <p> blocks).
+// {{PREHEADER}} sets the hidden inbox-preview line.
+//
+// No footer or tracking token in the shell — CC handles those on send.
 
 export function renderEmailHtml({ subject, body, preheader }) {
   const pre = preheader || '';
-  const bodyHtml = body || '';
+  const bodyHtml = styleParagraphs(body || '');
   const title = subject || 'Defend Survive Prepare';
 
   return `<!DOCTYPE html>
@@ -15,25 +16,17 @@ export function renderEmailHtml({ subject, body, preheader }) {
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 </head>
-<body style="margin:0;padding:0;min-width:100%;background-color:#474747;">
-<div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">${escapeText(pre)}</div>
-[[trackingImage]]
-<table width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#474747;">
-  <tr>
-    <td align="center" style="padding:15px 18px;">
-      <table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:650px;max-width:650px;background-color:#ffffff;">
-        <tr>
-          <td align="left" style="font-family:Roboto,Arial,sans-serif;color:#3E3E3E;font-size:17px;line-height:2em;word-wrap:break-word;padding:50px 30px;">${bodyHtml}
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding:10px 40px 4px;">
-            <p style="margin:0;font-family:Roboto,Arial,sans-serif;color:#525252;font-size:10px;line-height:1.4;">Defend Survive Prepare | 760 Farm to Market 1626 | Manchaca, TX 78652 US</p>
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding:0 40px 20px;">
-            <p style="margin:0;font-family:Roboto,Arial,sans-serif;color:#525252;font-size:11px;line-height:1.4;"> <a href="[[unsubscribe]]" data-track="false">Unsubscribe<span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]] from [[account.organizationName]][[ENDIF]]">&zwnj;</span></a><span> | </span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF partner.optout IS &quot;T&quot;]]Unsubscribe from all [[partner.companyName]][[ENDIF]]">&zwnj;</span><span><a href="[[updateLink]]" data-track="false">Update Profile</a></span><span> | </span><span><span data-is-bsl="true" data-token="&zwnj;" data-bracket-syntax="[[IF customPrivacyPolicyUrl]]Our Privacy Policy | [[ENDIF]]">&zwnj;</span><a href="[[aboutCtctLink]]" data-track="false">Constant Contact Data Notice</a></span> </p>
+<body style="margin:0;padding:0;min-width:100%;background-color:#ffffff;">
+
+
+<div id="preheader" style="color:transparent;display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;max-height:0; overflow:hidden; mso-hide:all;">${escapeText(pre)}</div>
+<table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:650px;margin-left:auto;margin-right:auto;background-color:#ffffff;border-color:#ffffff;">
+<tr>
+<td align="center" style="padding:0px 22px;">
+
+<table width="650" align="center" border="0" cellpadding="0" cellspacing="0" style="width:100%;max-width:650px;background-color:#ffffff;display:block; border:none; border-collapse:collapse;padding:1%;overflow:hidden;border-color:#ffffff;">
+<tr>
+<td align="left" style="color:#333333;font-family:'PT Sans',Roboto,Arial,sans-serif;font-size:17px;font-weight:400;line-height:1.7em;letter-spacing:0;text-align:left;word-wrap:break-word;padding:0px 20px;">${bodyHtml}
           </td>
         </tr>
       </table>
@@ -50,8 +43,42 @@ function escapeText(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
-// addTracking: append channel + UTM params to every sl.defendsurviveprepare.com
-// link. Idempotent (skips links already carrying tid=).
+
+// styleParagraphs: force every <p> in the body to carry the exact house style.
+// Any existing style attribute on a <p> is replaced. Other <p> attributes are dropped
+// so the paragraph style is uniform across the email.
+const FONT = "color: #333333;font-family: PT Sans, Roboto, sans-serif;font-size: 17px;font-weight: 400;line-height: 1.9999999999999996;";
+function pStyle(mb, mt) {
+  return `${mt ? `margin-top:${mt}px;` : ''}margin-bottom:${mb}px;${FONT}`;
+}
+// Spacing pattern (from the approved manual edit):
+//   body paragraphs        -> 25px
+//   paragraph before CTA   -> 45px
+//   CTA paragraph          -> 65px
+//   sign-off ("Stay Safe") -> 75px
+//   P.S.                   -> 25px
+export function styleParagraphs(html) {
+  if (!html) return html;
+  const isPS = (b) => /(^|>)\s*(<[^>]+>\s*)*P\.?\s?S\.?[\s.:]/i.test(b);
+  const isSignoff = (b) => /Stay Safe/i.test(b);
+  const isCTA = (b) => /sl\.defendsurviveprepare\.com/i.test(b) && !isPS(b) && !isSignoff(b);
+
+  // First pass: index every <p> block and locate the CTA.
+  const blocks = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi) || [];
+  const ctaIndex = blocks.findIndex(isCTA);
+
+  // Second pass: rewrite each <p> by its ordinal position.
+  let i = -1;
+  return html.replace(/<p\b[^>]*>([\s\S]*?)<\/p>/gi, (m, inner) => {
+    i++;
+    let mb = 25;
+    if (isSignoff(m)) mb = 75;
+    else if (isCTA(m)) mb = 65;
+    else if (ctaIndex > 0 && i === ctaIndex - 1) mb = 45;
+    return `<p style="${pStyle(mb, 0)}">${inner}</p>`;
+  });
+}
+
 export function addTracking(html, { vendor } = {}) {
   if (!html) return html;
   const campaign = (vendor || 'unknown').toString().trim();
