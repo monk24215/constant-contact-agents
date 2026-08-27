@@ -1,11 +1,12 @@
-# mcp/ — read-only MCP server for Constant Contact
+# mcp/ — MCP server for Constant Contact (read + guarded drafts)
 
-Exposes the Constant Contact account to Claude as MCP tools, so a client can
-query lists, campaigns, and reports without depending on a third-party
-connector whose OAuth grant expires independently of this project's tokens.
+Exposes the Constant Contact account to an MCP client (e.g. Claude) as tools,
+so it can query lists, campaigns, and reports — and create or edit **draft**
+campaigns — without depending on a third-party connector whose OAuth grant
+expires independently of this project's tokens.
 
-Deploy as its own Railway service with **Root Directory: `/mcp`**, matching the
-pattern in the repo README.
+Deploy as its own Railway service with **Root Directory: `/mcp`**, matching
+the pattern in the repo README.
 
 ## Why this exists
 
@@ -14,13 +15,22 @@ integrations that happen to point at the same account. Refreshing one never
 fixes the other. This service removes that second, invisible auth chain: it
 reads the same `oauth_tokens` row every other agent uses.
 
-## Read-only by construction
+## What this service can and can't do
 
-`src/lib/api.js` is a copy of the composer's with `createEmailCampaign` and
-`sendTest` deleted. There is no code path in this service that can create,
-modify, or send anything in Constant Contact. Campaign creation stays in
-`composer/`, draft-only. Keep it that way — if you later want write tools, add
-them deliberately rather than by restoring the deleted helpers.
+`src/lib/api.js` is a copy of the composer's client. This service can:
+
+- Read lists, campaigns, campaign activities, and stats.
+- Create a new campaign (always a **draft** — Constant Contact drafts are
+  never auto-sent).
+- Edit a draft's subject, HTML, sender, or preheader (only works while the
+  campaign is still a draft).
+- Rename a campaign, and create a new (empty) contact list.
+- Send a **test** email to up to 5 explicit addresses (`cc_send_test`) —
+  this never touches a real contact list.
+
+It **cannot** send or schedule a campaign to a live list, and has no tool
+that does. If you later want that capability, add it deliberately and give
+it its own explicit safeguards — don't repurpose the draft tools.
 
 ## Token handling
 
@@ -36,6 +46,8 @@ chain, via its `/authorize` route.
 
 ## Required variables
 
+See `mcp/.env.example` for the full list with descriptions. In short:
+
 | Variable | Value |
 | --- | --- |
 | `DATABASE_URL` | `${{token-store.DATABASE_URL}}` — the same row the other agents use |
@@ -43,6 +55,8 @@ chain, via its `/authorize` route.
 | `CC_CLIENT_SECRET` | same as the other services |
 | `MCP_SHARED_SECRET` | new random string, ≥24 chars — `openssl rand -hex 24` |
 | `CONSTANT_CONTACT_BASE_URL` | optional; defaults to `https://api.cc.email/v3` |
+| `CC_FROM_NAME` / `CC_FROM_EMAIL` / `CC_REPLY_TO` | defaults for `cc_create_campaign` |
+| `CC_ADDR_*` | CAN-SPAM footer address for any campaign this service creates |
 
 Do **not** set `CC_ACCESS_TOKEN` here. The database row is the source of truth.
 
@@ -62,9 +76,10 @@ does not implement an OAuth flow.
 
 Claude's custom-connector dialog accepts a URL but no static auth header, so the
 secret rides in the path. That makes it a *capability URL*: anyone holding it
-can read the account. It is stored by the client and can appear in logs and
-proxies. Treat it like a password, don't paste it into shared docs, and rotate
-it by changing `MCP_SHARED_SECRET` (which invalidates the old URL immediately).
+can read the account and create/edit drafts. It is stored by the client and can
+appear in logs and proxies. Treat it like a password, don't paste it into shared
+docs, and rotate it by changing `MCP_SHARED_SECRET` (which invalidates the old
+URL immediately).
 
 A wrong or missing secret returns `404`, not `401`, so the endpoint does not
 advertise itself to scanners.
@@ -77,13 +92,17 @@ path secret with a real OAuth flow and discovery metadata at
 
 | Tool | Purpose |
 | --- | --- |
-| `cc_account_summary` | Account name, contact email, plan |
 | `cc_list_contact_lists` | All lists with membership counts |
 | `cc_list_campaigns` | Recent campaigns with ids and status |
 | `cc_get_campaign` | One campaign, including its activity ids |
 | `cc_get_campaign_activity` | Subject, from/reply-to, HTML content |
 | `cc_campaign_stats` | Sends, opens, clicks, bounces, unsubscribes |
+| `cc_create_campaign` | Create a new campaign — always a draft |
+| `cc_update_campaign_activity` | Edit subject/HTML/sender/preheader on a draft |
+| `cc_rename_campaign` | Change a campaign's internal name |
+| `cc_create_list` | Create a new, empty contact list |
+| `cc_send_test` | Send a test to up to 5 explicit addresses — never a live list |
 
 ## Health
 
-`GET /healthz` → `{"ok":true,"service":"mcp","readOnly":true}`
+`GET /healthz` → `{"ok":true,"service":"mcp","writes":"draft-only"}`
