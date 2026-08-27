@@ -5,12 +5,33 @@
 // Plus /healthz for Railway and / for a status page.
 
 import express from 'express';
+import crypto from 'node:crypto';
 import { initTokenStore } from './lib/index.js';
 import { runComposer } from './worker.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const POLL_MINUTES = Number(process.env.POLL_MINUTES || 15);
+
+// Optional: gate the status page (`/`) and the manual trigger (`/run`)
+// behind a shared secret, the same capability-URL pattern mcp/ and auth/
+// use. Stays OPTIONAL so existing deployments keep working unchanged — if
+// unset, both routes remain open and a warning is logged at startup.
+const COMPOSER_SHARED_SECRET = process.env.COMPOSER_SHARED_SECRET || null;
+
+function keyMatches(candidate) {
+  if (!COMPOSER_SHARED_SECRET) return true;
+  const a = Buffer.from(String(candidate || ''));
+  const b = Buffer.from(COMPOSER_SHARED_SECRET);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function requireKey(req, res, next) {
+  if (keyMatches(req.query.key)) return next();
+  // 404, not 401 — don't advertise that a gated route exists to scanners.
+  return res.status(404).json({ error: 'not found' });
+}
 
 let lastRun = null;
 let running = false;
@@ -31,7 +52,7 @@ async function tick(trigger) {
   }
 }
 
-app.get('/', (req, res) => {
+app.get('/', requireKey, (req, res) => {
   res.json({
     service: 'composer',
     pollMinutes: POLL_MINUTES,
@@ -39,9 +60,11 @@ app.get('/', (req, res) => {
   });
 });
 
+// Health endpoint for Railway. Intentionally ungated and minimal — no
+// account or calendar data, just a liveness signal for the platform.
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
-app.get('/run', async (req, res) => {
+app.get('/run', requireKey, async (req, res) => {
   const result = await tick('manual');
   res.json(result);
 });
@@ -64,6 +87,14 @@ async function initWithRetry(attempts = 10, delayMs = 3000) {
 }
 
 function main() {
+  if (!COMPOSER_SHARED_SECRET) {
+    console.warn(
+      '[composer] COMPOSER_SHARED_SECRET is not set. "/" and "/run" are ' +
+        'open to anyone who finds this service\'s URL — "/run" lets them ' +
+        'trigger a compose pass on demand. Set COMPOSER_SHARED_SECRET (e.g. ' +
+        '`openssl rand -hex 24`) to require ?key=... on those routes.'
+    );
+  }
   app.listen(PORT, () => console.log(`[composer] listening on :${PORT}`));
   initWithRetry();
   // Autonomous loop.
