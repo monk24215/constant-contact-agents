@@ -25,7 +25,37 @@ const PORT = process.env.PORT || 3000;
 // Simple in-memory state token for CSRF protection on the OAuth round-trip.
 let pendingState = null;
 
-app.get('/', async (req, res) => {
+// Optional: gate the status (`/`) and `/verify` pages behind a shared
+// secret, the same capability-URL pattern mcp/ uses for MCP_SHARED_SECRET.
+// Unlike mcp/, this stays OPTIONAL so existing deployments that haven't set
+// it keep working — if unset, these pages remain open and a warning is
+// logged at startup. `/authorize` and `/callback` are never gated: they're
+// needed for the one-time OAuth handshake and don't expose account data.
+const AUTH_SHARED_SECRET = process.env.AUTH_SHARED_SECRET || null;
+
+function keyMatches(candidate) {
+  if (!AUTH_SHARED_SECRET) return true;
+  const a = Buffer.from(String(candidate || ''));
+  const b = Buffer.from(AUTH_SHARED_SECRET);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function requireKey(req, res, next) {
+  if (keyMatches(req.query.key)) return next();
+  // 404, not 401 — don't advertise that a gated page exists to scanners.
+  return res.status(404).send('Not found');
+}
+
+// Appends ?key=... to internal links when a secret is configured, so the
+// status page stays click-through-able for whoever already has the key.
+function withKey(path) {
+  return AUTH_SHARED_SECRET
+    ? `${path}?key=${encodeURIComponent(AUTH_SHARED_SECRET)}`
+    : path;
+}
+
+app.get('/', requireKey, async (req, res) => {
   let authorized = false;
   try {
     authorized = await hasTokens();
@@ -43,7 +73,7 @@ app.get('/', async (req, res) => {
         `<p>The app is authorized. Tokens are stored and auto-refreshing.</p>
          <p><b>Access token expires:</b> ${escapeHtml(new Date(t.expires_at).toISOString())}</p>
          <p><b>Scope:</b> ${escapeHtml(t.scope || 'n/a')}</p>
-         <p><a href="/verify">Run a live API check →</a></p>
+         <p><a href="${withKey('/verify')}">Run a live API check →</a></p>
          <hr><p>Need to re-authorize? <a href="/authorize">Start over</a>.</p>`
       )
     );
@@ -92,7 +122,7 @@ app.get('/callback', async (req, res) => {
         'Authorized ✅',
         `<p>Success. Tokens stored and the system is now self-refreshing.</p>
          <p>You can close this tab. You won't need to come back here.</p>
-         <p><a href="/">Back to status</a></p>`
+         <p><a href="${withKey('/')}">Back to status</a></p>`
       )
     );
   } catch (e) {
@@ -103,7 +133,7 @@ app.get('/callback', async (req, res) => {
 });
 
 // Live sanity check: mint a token and hit a real CC endpoint.
-app.get('/verify', async (req, res) => {
+app.get('/verify', requireKey, async (req, res) => {
   try {
     await getValidAccessToken();
     // Use /contact_lists — covered by the contact_data scope this app holds.
@@ -121,7 +151,8 @@ app.get('/verify', async (req, res) => {
   }
 });
 
-// Health endpoint for Railway.
+// Health endpoint for Railway. Intentionally ungated and minimal — no
+// account data, just a liveness signal for the platform's healthcheck.
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 function escapeHtml(s) {
@@ -157,6 +188,14 @@ async function initWithRetry(attempts = 10, delayMs = 3000) {
 }
 
 function main() {
+  if (!AUTH_SHARED_SECRET) {
+    console.warn(
+      '[auth] AUTH_SHARED_SECRET is not set. "/" and "/verify" are open to ' +
+        'anyone who finds this service\'s URL — they can see token expiry ' +
+        'and (via /verify) your contact list names. Set AUTH_SHARED_SECRET ' +
+        '(e.g. `openssl rand -hex 24`) to require ?key=... on those pages.'
+    );
+  }
   app.listen(PORT, () => {
     console.log(`[auth] listening on :${PORT}`);
   });
