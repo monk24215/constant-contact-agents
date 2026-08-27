@@ -94,15 +94,18 @@ reports back into the tracker).
   function imported or reachable from it.
 - `mcp/`'s only path to a real inbox is `cc_send_test`, capped at 5 explicit
   addresses — it cannot write to or message a live contact list.
-- `mcp/`'s endpoint is a *capability URL* (`/mcp/<MCP_SHARED_SECRET>`, compared
-  with a timing-safe check, 404 on mismatch). Treat that secret like a
-  password — anyone holding the full URL can read the account. Rotate it by
-  changing `MCP_SHARED_SECRET`.
-- `auth/`'s status page (`/`) and `/verify` are currently **not**
-  authenticated — if you deploy it somewhere with a guessable URL, anyone who
-  finds it can see token expiry/scope and (via `/verify`) your contact list
-  names. If that matters for your deployment, put it behind Railway's private
-  networking or add your own auth in front of it.
+- Every service that has a status/trigger page you can reach over HTTP —
+  `mcp/`'s `/mcp/<secret>`, `auth/`'s `/` and `/verify`, `composer/`'s `/`
+  and `/run` — supports a shared-secret capability URL (compared with a
+  timing-safe check, 404 on mismatch), so a discovered Railway URL alone
+  isn't enough to read the account or trigger anything. `mcp/` requires its
+  secret (`MCP_SHARED_SECRET`); `auth/` (`AUTH_SHARED_SECRET`) and
+  `composer/` (`COMPOSER_SHARED_SECRET`) treat it as optional and log a
+  startup warning if it's unset, so older deployments aren't broken by this
+  change. Set all three when you deploy. Rotate any of them by changing the
+  env var — that immediately invalidates the old URL.
+- `/healthz` on every service is intentionally left ungated — it returns no
+  account data and Railway's healthcheck needs to reach it unauthenticated.
 
 ## Rights
 
