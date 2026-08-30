@@ -9,8 +9,10 @@
 // Relationship to the other agents:
 //   - auth/     owns initial authorization and the oauth_tokens table.
 //   - composer/ owns campaign creation (draft-only).
-//   - mcp/      (this) reads. It shares the token row and can refresh it, but
-//               has no code path that writes to Constant Contact.
+//   - mcp/      (this) reads, plus a small set of reversible writes (draft
+//               edits, empty-list creation, test sends, and — as of the
+//               daily-opens automation — explicit-id list membership changes
+//               used by the daily-opens-cron service).
 
 import express from 'express';
 import crypto from 'node:crypto';
@@ -29,6 +31,9 @@ import {
   renameCampaign,
   createContactList,
   sendTest,
+  getActivityOpenBreakdown,
+  getContactsInList,
+  updateListMembership,
 } from './lib/api.js';
 
 // Footer address is legally required on every CC campaign. Read from the same
@@ -159,6 +164,31 @@ function buildServer() {
     ({ campaignActivityId }) => run(() => getCampaignStats(campaignActivityId))
   );
 
+  server.registerTool(
+    'cc_get_activity_opens',
+    {
+      title: 'Get per-contact opens/unopens',
+      description:
+        'Per-contact opens and unopens for a campaign activity (not just aggregate counts). Splits the send list into opened vs. unopened contact ids.',
+      inputSchema: {
+        activityId: z.string().describe('The campaign activity id (UUID).'),
+      },
+    },
+    ({ activityId }) => run(() => getActivityOpenBreakdown(activityId))
+  );
+
+  server.registerTool(
+    'cc_get_list_members',
+    {
+      title: 'Get list members',
+      description: 'Contact ids currently in a given list.',
+      inputSchema: {
+        listId: z.string().describe('The contact list id.'),
+      },
+    },
+    ({ listId }) => run(() => getContactsInList(listId))
+  );
+
   // --- Writes ---------------------------------------------------------------
 
   server.registerTool(
@@ -266,6 +296,25 @@ function buildServer() {
       run(() => sendTest(activityId, emailAddresses))
   );
 
+  server.registerTool(
+    'cc_update_list_membership',
+    {
+      title: 'Add/remove contacts from a list',
+      description:
+        "Add or remove specific contacts from a list, by explicit contact id. The only tool here that changes list membership directly — never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too.",
+      inputSchema: {
+        contactIds: z
+          .array(z.string())
+          .min(1)
+          .describe('Contact ids to add or remove.'),
+        listId: z.string().describe('The contact list id.'),
+        action: z.enum(['add_list', 'remove_list']),
+      },
+    },
+    ({ contactIds, listId, action }) =>
+      run(() => updateListMembership(contactIds, listId, action))
+  );
+
   return server;
 }
 
@@ -275,7 +324,7 @@ const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, service: 'mcp', writes: 'draft-only' });
+  res.json({ ok: true, service: 'mcp', writes: 'draft-only + explicit-id list membership' });
 });
 
 app.post('/mcp/:secret', async (req, res) => {
@@ -319,5 +368,5 @@ app.all('/mcp/:secret', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[mcp] read-only Constant Contact MCP server on :${PORT}`);
+  console.log(`[mcp] Constant Contact MCP server on :${PORT}`);
 });
