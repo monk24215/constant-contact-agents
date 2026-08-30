@@ -1,0 +1,11 @@
+{
+  "name": "cc-daily-opens-cron",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": {
+    "luxon": "^3.5.0",
+    "pg": "^8.13.1"
+  }
+}
