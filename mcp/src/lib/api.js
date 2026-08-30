@@ -9,6 +9,11 @@
 // send. Creating and editing is reversible; sending 28,000 emails is not. Test
 // sends to explicit addresses are allowed.
 //
+// ADDITION (daily-opens automation): per-contact tracking (opens/sends) and
+// list-membership add/remove. These endpoints were not previously exercised
+// by this service — verify field names/pagination shape against a real
+// response before relying on them unattended.
+//
 // Base URL: https://api.cc.email/v3
 
 import { getValidAccessToken } from './oauth.js';
@@ -41,6 +46,27 @@ async function ccFetch(path, { method = 'GET', body, query } = {}) {
     throw new Error(
       `CC API ${method} ${path} failed (${res.status}): ${JSON.stringify(data)}`
     );
+  }
+  return data;
+}
+
+// Follow a Constant Contact "_links.next.href" pagination link. CC returns
+// these as a path (e.g. "/v3/reports/...&cursor=..."), not a full URL, so
+// this doesn't go through ccFetch's API_BASE-prepending logic.
+async function ccFetchNext(nextHref) {
+  const token = await getValidAccessToken();
+  const url = nextHref.startsWith('http')
+    ? nextHref
+    : `https://api.cc.email${nextHref}`;
+
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    throw new Error(`CC API GET ${url} failed (${res.status}): ${JSON.stringify(data)}`);
   }
   return data;
 }
@@ -155,6 +181,71 @@ export function sendTest(activityId, emailAddresses) {
 export function getCampaignStats(campaignActivityId) {
   return ccFetch('/reports/summary_reports/email_campaign_summaries', {
     query: { campaign_activity_id: campaignActivityId },
+  });
+}
+
+// --- Contact tracking (per-contact opens/sends) ------------------------------
+//
+// NOTE: not previously exercised by this service. Verify tracking_activities[]
+// field names and the pagination link shape against a real response — adjust
+// below if CC's actual payload differs from what's assumed here.
+
+async function getTrackingContactIds(activityId, trackingActivityType) {
+  const ids = new Set();
+  let page = await ccFetch(`/reports/contact_tracking/activities/${activityId}`, {
+    query: { tracking_activity_type: trackingActivityType, limit: '500' },
+  });
+
+  while (page) {
+    for (const record of page.tracking_activities || []) {
+      if (record.contact_id) ids.add(record.contact_id);
+    }
+    const next = page._links?.next?.href;
+    page = next ? await ccFetchNext(next) : null;
+  }
+  return ids;
+}
+
+// Per-contact opens vs. sends for one campaign activity, resolved to unopens
+// by set subtraction (sent minus opened).
+export async function getActivityOpenBreakdown(activityId) {
+  const [sent, opened] = await Promise.all([
+    getTrackingContactIds(activityId, 'sends'),
+    getTrackingContactIds(activityId, 'opens'),
+  ]);
+  const unopened = [...sent].filter((id) => !opened.has(id));
+  return { opened: [...opened], unopened, sentCount: sent.size };
+}
+
+// --- List membership ---------------------------------------------------------
+
+// Contacts currently in a list, by id. cc_list_contact_lists only returns a
+// count, not member ids — this is what the daily clear step reads before
+// removing membership.
+export async function getContactsInList(listId) {
+  const ids = [];
+  let page = await ccFetch('/contacts', { query: { lists: listId, limit: '500' } });
+
+  while (page) {
+    for (const c of page.contacts || []) {
+      if (c.contact_id) ids.push(c.contact_id);
+    }
+    const next = page._links?.next?.href;
+    page = next ? await ccFetchNext(next) : null;
+  }
+  return ids;
+}
+
+// Add or remove specific contacts from a list. The one write here that
+// touches list membership directly — always pass explicit contact ids,
+// never "all contacts." action: 'add_list' | 'remove_list'.
+export function updateListMembership(contactIds, listId, action) {
+  if (!Array.isArray(contactIds) || contactIds.length === 0) {
+    return Promise.resolve({ updated: 0, note: 'no contact ids provided' });
+  }
+  return ccFetch('/activities/contacts_list_membership', {
+    method: 'POST',
+    body: { source: { contact_ids: contactIds }, lists: [listId], action },
   });
 }
 
