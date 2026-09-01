@@ -25,12 +25,48 @@
 // cc_clear_list_status. In-memory job state does not survive a redeploy or
 // restart of this service — don't redeploy mid-job.
 //
+// ADDITION (2026-09-01, same day): ccFetch/ccFetchNext had no request
+// timeout, so a single hung connection could stall the whole pagination
+// loop silently — no error, no progress, indistinguishable from "just
+// slow." Added a per-request timeout + one retry, and page-level progress
+// (fetchedSoFar / pagesSoFar) on the clear job so a stall is visible instead
+// of a guess.
+//
 // Base URL: https://api.cc.email/v3
 
 import { getValidAccessToken } from './oauth.js';
 
 const API_BASE =
   process.env.CONSTANT_CONTACT_BASE_URL || 'https://api.cc.email/v3';
+
+const REQUEST_TIMEOUT_MS = 20_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// One retry on timeout/network error only (not on a real HTTP error response,
+// which is handled by the caller). Keeps a single hung/dropped connection
+// from stalling a multi-hundred-page pagination loop indefinitely.
+async function fetchWithRetry(url, options) {
+  try {
+    return await fetchWithTimeout(url, options);
+  } catch (err) {
+    console.warn(`[cc-api] request failed (${err.message}), retrying once: ${url}`);
+    await sleep(1000);
+    return fetchWithTimeout(url, options);
+  }
+}
 
 async function ccFetch(path, { method = 'GET', body, query } = {}) {
   const token = await getValidAccessToken();
@@ -40,7 +76,7 @@ async function ccFetch(path, { method = 'GET', body, query } = {}) {
     url += `?${qs}`;
   }
 
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -70,7 +106,7 @@ async function ccFetchNext(nextHref) {
     ? nextHref
     : `https://api.cc.email${nextHref}`;
 
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
   const text = await res.text();
@@ -232,15 +268,19 @@ export async function getActivityOpenBreakdown(activityId) {
 
 // Contacts currently in a list, by id. cc_list_contact_lists only returns a
 // count, not member ids — this is what the daily clear step reads before
-// removing membership.
-export async function getContactsInList(listId) {
+// removing membership. onPage(fetchedSoFar, pageCount), if given, fires after
+// each page so a caller can surface progress.
+export async function getContactsInList(listId, onPage) {
   const ids = [];
   let page = await ccFetch('/contacts', { query: { lists: listId, limit: '500' } });
+  let pageCount = 0;
 
   while (page) {
     for (const c of page.contacts || []) {
       if (c.contact_id) ids.push(c.contact_id);
     }
+    pageCount += 1;
+    if (onPage) onPage(ids.length, pageCount);
     const next = page._links?.next?.href;
     page = next ? await ccFetchNext(next) : null;
   }
@@ -285,11 +325,14 @@ export function startClearList(listId) {
   const job = {
     status: 'running',
     phase: 'fetching_members',
+    fetchedSoFar: 0,
+    pagesSoFar: 0,
     totalMembers: null,
     removed: 0,
     batches: null,
     batchesDone: 0,
     startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     finishedAt: null,
     error: null,
   };
@@ -298,28 +341,39 @@ export function startClearList(listId) {
   (async () => {
     try {
       console.log(`[clear-list] ${listId}: fetching member ids...`);
-      const ids = await getContactsInList(listId);
+      const ids = await getContactsInList(listId, (fetchedSoFar, pagesSoFar) => {
+        job.fetchedSoFar = fetchedSoFar;
+        job.pagesSoFar = pagesSoFar;
+        job.updatedAt = new Date().toISOString();
+        if (pagesSoFar % 10 === 0) {
+          console.log(`[clear-list] ${listId}: fetch progress — page ${pagesSoFar}, ${fetchedSoFar} ids so far`);
+        }
+      });
       job.totalMembers = ids.length;
       job.batches = Math.ceil(ids.length / CLEAR_BATCH_SIZE) || 0;
       job.phase = 'removing';
-      console.log(`[clear-list] ${listId}: fetched ${ids.length} member ids, removing in ${job.batches} batch(es) of ${CLEAR_BATCH_SIZE}`);
+      job.updatedAt = new Date().toISOString();
+      console.log(`[clear-list] ${listId}: fetched ${ids.length} member ids across ${job.pagesSoFar} pages, removing in ${job.batches} batch(es) of ${CLEAR_BATCH_SIZE}`);
 
       for (let i = 0; i < ids.length; i += CLEAR_BATCH_SIZE) {
         const batch = ids.slice(i, i + CLEAR_BATCH_SIZE);
         await updateListMembership(batch, listId, 'remove_list');
         job.removed += batch.length;
         job.batchesDone += 1;
+        job.updatedAt = new Date().toISOString();
         console.log(`[clear-list] ${listId}: batch ${job.batchesDone}/${job.batches} done, removed ${job.removed}/${job.totalMembers}`);
       }
 
       job.status = 'done';
       job.phase = 'complete';
       job.finishedAt = new Date().toISOString();
+      job.updatedAt = job.finishedAt;
       console.log(`[clear-list] ${listId}: DONE. removed ${job.removed} of ${job.totalMembers}`);
     } catch (err) {
       job.status = 'error';
       job.error = err.message;
       job.finishedAt = new Date().toISOString();
+      job.updatedAt = job.finishedAt;
       console.error(`[clear-list] ${listId}: FAILED after removing ${job.removed}`, err);
     }
   })();
