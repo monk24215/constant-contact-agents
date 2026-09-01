@@ -14,6 +14,17 @@
 // by this service — verify field names/pagination shape against a real
 // response before relying on them unattended.
 //
+// ADDITION (2026-09-01): background clear-list job. getContactsInList()
+// pages sequentially through /contacts (500/page) and updateListMembership()
+// posts the full id array in one call — fine up to the ~30k scale
+// daily-opens-cron exercises, but a 271k-member list takes minutes just to
+// page through, which blows the MCP client's 60s per-tool-call timeout.
+// startClearList() runs the same fetch-then-remove sequence in the
+// background (fire-and-forget from the request handler) so the MCP tool
+// call returns immediately; progress is tracked in-memory and polled via
+// cc_clear_list_status. In-memory job state does not survive a redeploy or
+// restart of this service — don't redeploy mid-job.
+//
 // Base URL: https://api.cc.email/v3
 
 import { getValidAccessToken } from './oauth.js';
@@ -247,6 +258,73 @@ export function updateListMembership(contactIds, listId, action) {
     method: 'POST',
     body: { source: { contact_ids: contactIds }, lists: [listId], action },
   });
+}
+
+// --- Background clear-list job ------------------------------------------------
+//
+// Removes ALL current members of a list from that list (membership only —
+// contacts themselves are not deleted from the account). Built for lists too
+// large to fetch-and-remove inside a single 60s MCP tool call. Runs
+// fire-and-forget in this process; state lives in memory only (lost on
+// redeploy/restart) and is keyed by listId, so only one job per list runs at
+// a time.
+
+const CLEAR_BATCH_SIZE = 5000;
+const clearJobs = new Map(); // listId -> job state
+
+export function getClearJobStatus(listId) {
+  return clearJobs.get(listId) || { status: 'not_found' };
+}
+
+export function startClearList(listId) {
+  const existing = clearJobs.get(listId);
+  if (existing && existing.status === 'running') {
+    return { alreadyRunning: true, ...existing };
+  }
+
+  const job = {
+    status: 'running',
+    phase: 'fetching_members',
+    totalMembers: null,
+    removed: 0,
+    batches: null,
+    batchesDone: 0,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    error: null,
+  };
+  clearJobs.set(listId, job);
+
+  (async () => {
+    try {
+      console.log(`[clear-list] ${listId}: fetching member ids...`);
+      const ids = await getContactsInList(listId);
+      job.totalMembers = ids.length;
+      job.batches = Math.ceil(ids.length / CLEAR_BATCH_SIZE) || 0;
+      job.phase = 'removing';
+      console.log(`[clear-list] ${listId}: fetched ${ids.length} member ids, removing in ${job.batches} batch(es) of ${CLEAR_BATCH_SIZE}`);
+
+      for (let i = 0; i < ids.length; i += CLEAR_BATCH_SIZE) {
+        const batch = ids.slice(i, i + CLEAR_BATCH_SIZE);
+        await updateListMembership(batch, listId, 'remove_list');
+        job.removed += batch.length;
+        job.batchesDone += 1;
+        console.log(`[clear-list] ${listId}: batch ${job.batchesDone}/${job.batches} done, removed ${job.removed}/${job.totalMembers}`);
+      }
+
+      job.status = 'done';
+      job.phase = 'complete';
+      job.finishedAt = new Date().toISOString();
+      console.log(`[clear-list] ${listId}: DONE. removed ${job.removed} of ${job.totalMembers}`);
+    } catch (err) {
+      job.status = 'error';
+      job.error = err.message;
+      job.finishedAt = new Date().toISOString();
+      console.error(`[clear-list] ${listId}: FAILED after removing ${job.removed}`, err);
+    }
+  })();
+
+  return { started: true, ...job };
 }
 
 export { ccFetch };
