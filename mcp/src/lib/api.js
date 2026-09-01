@@ -14,23 +14,36 @@
 // by this service — verify field names/pagination shape against a real
 // response before relying on them unattended.
 //
-// ADDITION (2026-09-01): background clear-list job. getContactsInList()
-// pages sequentially through /contacts (500/page) and updateListMembership()
-// posts the full id array in one call — fine up to the ~30k scale
-// daily-opens-cron exercises, but a 271k-member list takes minutes just to
-// page through, which blows the MCP client's 60s per-tool-call timeout.
-// startClearList() runs the same fetch-then-remove sequence in the
-// background (fire-and-forget from the request handler) so the MCP tool
-// call returns immediately; progress is tracked in-memory and polled via
-// cc_clear_list_status. In-memory job state does not survive a redeploy or
-// restart of this service — don't redeploy mid-job.
+// ADDITION (2026-09-01): background clear-list job (list-membership removal
+// only — see caveat below). getContactsInList() pages sequentially through
+// /contacts (500/page) and updateListMembership() posts the full id array in
+// one call — fine up to the ~30k scale daily-opens-cron exercises, but a
+// 271k-member list takes minutes just to page through, which blows the MCP
+// client's 60s per-tool-call timeout. startClearList() runs the same
+// fetch-then-remove sequence in the background (fire-and-forget from the
+// request handler) so the MCP tool call returns immediately; progress is
+// tracked in-memory and polled via cc_clear_list_status. In-memory job state
+// does not survive a redeploy or restart of this service — don't redeploy
+// mid-job. ccFetch/ccFetchNext also got a per-request timeout + one retry
+// here, plus page-level progress tracking, after a run stalled silently for
+// 10+ minutes with no error and no visible progress.
 //
-// ADDITION (2026-09-01, same day): ccFetch/ccFetchNext had no request
-// timeout, so a single hung connection could stall the whole pagination
-// loop silently — no error, no progress, indistinguishable from "just
-// slow." Added a per-request timeout + one retry, and page-level progress
-// (fetchedSoFar / pagesSoFar) on the clear job so a stall is visible instead
-// of a guess.
+// CAVEAT: list-membership removal (the above) does NOT reduce an account's
+// billable/active contact count — CC bills on contacts existing in the
+// account, not on list membership. Removing someone from every list they're
+// on still leaves them counted. See contact deletion below for what
+// actually reduces the bill.
+//
+// ADDITION (2026-09-01, later same day): bulk contact deletion. CC's
+// /activities/contact_delete endpoint accepts a `list_ids` array directly
+// (up to 50 lists) and deletes every contact on those lists server-side —
+// no need to enumerate contact ids ourselves at all, unlike list-membership
+// removal. Per CC's docs, deleted contacts do not count against the
+// account's active-contact total, and are recoverable only by re-adding
+// them to a list (not a permanent hard-delete, but not a casual one
+// either — treat as irreversible for practical purposes). Processes
+// asynchronously on CC's side; submitting returns an activity id, polled
+// via GET /activities/{activity_id}.
 //
 // Base URL: https://api.cc.email/v3
 
@@ -289,7 +302,9 @@ export async function getContactsInList(listId, onPage) {
 
 // Add or remove specific contacts from a list. The one write here that
 // touches list membership directly — always pass explicit contact ids,
-// never "all contacts." action: 'add_list' | 'remove_list'.
+// never "all contacts." action: 'add_list' | 'remove_list'. NOTE: removing
+// a contact from every list they're on does NOT reduce the account's
+// billable contact count — see deleteContactsByList below for that.
 export function updateListMembership(contactIds, listId, action) {
   if (!Array.isArray(contactIds) || contactIds.length === 0) {
     return Promise.resolve({ updated: 0, note: 'no contact ids provided' });
@@ -300,14 +315,14 @@ export function updateListMembership(contactIds, listId, action) {
   });
 }
 
-// --- Background clear-list job ------------------------------------------------
+// --- Background clear-list job (list-membership removal) ---------------------
 //
 // Removes ALL current members of a list from that list (membership only —
-// contacts themselves are not deleted from the account). Built for lists too
-// large to fetch-and-remove inside a single 60s MCP tool call. Runs
-// fire-and-forget in this process; state lives in memory only (lost on
-// redeploy/restart) and is keyed by listId, so only one job per list runs at
-// a time.
+// contacts themselves are not deleted from the account, and this does NOT
+// reduce billable contact count). Built for lists too large to fetch-and-
+// remove inside a single 60s MCP tool call. Runs fire-and-forget in this
+// process; state lives in memory only (lost on redeploy/restart) and is
+// keyed by listId, so only one job per list runs at a time.
 
 const CLEAR_BATCH_SIZE = 5000;
 const clearJobs = new Map(); // listId -> job state
@@ -379,6 +394,57 @@ export function startClearList(listId) {
   })();
 
   return { started: true, ...job };
+}
+
+// --- Bulk contact deletion (actually reduces billable contact count) --------
+//
+// CC's /activities/contact_delete accepts list_ids directly (up to 50 lists)
+// — it deletes every contact on those lists server-side, so unlike the
+// clear-list job above, we don't enumerate contact ids ourselves at all.
+// Processes asynchronously on CC's side: submitting returns an activity id,
+// which is polled via GET /activities/{activity_id}. Per CC's docs, deleted
+// contacts don't count against the account's active-contact total, and are
+// recoverable only by re-adding them to a list — not a hard permanent
+// purge, but treat as irreversible for practical purposes.
+
+const deleteJobs = new Map(); // listId -> job state
+
+function extractActivityId(res) {
+  if (res?.activity_id) return res.activity_id;
+  const href = res?._links?.self?.href;
+  if (href) return href.split('/').filter(Boolean).pop();
+  return null;
+}
+
+export async function startDeleteContactsByList(listId) {
+  const res = await ccFetch('/activities/contact_delete', {
+    method: 'POST',
+    body: { list_ids: [listId] },
+  });
+  const activityId = extractActivityId(res);
+  const job = {
+    listId,
+    activityId,
+    submittedAt: new Date().toISOString(),
+    lastStatus: null,
+    lastCheckedAt: null,
+    lastRaw: res,
+  };
+  deleteJobs.set(listId, job);
+  console.log(`[delete-list] ${listId}: submitted bulk delete, activity_id=${activityId}`);
+  return { submitted: true, ...job };
+}
+
+export async function getDeleteJobStatus(listId) {
+  const job = deleteJobs.get(listId);
+  if (!job) return { status: 'not_found' };
+  if (!job.activityId) return { status: 'unknown_activity_id', ...job };
+  const activity = await ccFetch(`/activities/${job.activityId}`);
+  job.lastStatus = activity?.status || activity?.state || JSON.stringify(activity);
+  job.lastCheckedAt = new Date().toISOString();
+  job.lastRaw = activity;
+  console.log(`[delete-list] ${listId}: activity ${job.activityId} status=${job.lastStatus}`);
+  return { ...job, activity };
 }
 
 export { ccFetch };
