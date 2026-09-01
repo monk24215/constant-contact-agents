@@ -13,6 +13,10 @@
 //               edits, empty-list creation, test sends, and — as of the
 //               daily-opens automation — explicit-id list membership changes
 //               used by the daily-opens-cron service).
+//
+// NOTE: cc_clear_list_start/cc_clear_list_status run a background job in
+// this process (see startClearList in lib/api.js) — job state is in-memory
+// only and does not survive a redeploy/restart of this service.
 
 import express from 'express';
 import crypto from 'node:crypto';
@@ -34,6 +38,8 @@ import {
   getActivityOpenBreakdown,
   getContactsInList,
   updateListMembership,
+  startClearList,
+  getClearJobStatus,
 } from './lib/api.js';
 
 // Footer address is legally required on every CC campaign. Read from the same
@@ -181,7 +187,8 @@ function buildServer() {
     'cc_get_list_members',
     {
       title: 'Get list members',
-      description: 'Contact ids currently in a given list.',
+      description:
+        'Contact ids currently in a given list. Pages through the full list synchronously — for very large lists (tens of thousands+) this can exceed a single tool call\'s time budget; use cc_clear_list_start instead if the goal is to empty the list.',
       inputSchema: {
         listId: z.string().describe('The contact list id.'),
       },
@@ -301,7 +308,7 @@ function buildServer() {
     {
       title: 'Add/remove contacts from a list',
       description:
-        "Add or remove specific contacts from a list, by explicit contact id. The only tool here that changes list membership directly — never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too.",
+        "Add or remove specific contacts from a list, by explicit contact id. The only tool here that changes list membership directly — never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too. For clearing an entire large list, prefer cc_clear_list_start.",
       inputSchema: {
         contactIds: z
           .array(z.string())
@@ -315,6 +322,32 @@ function buildServer() {
       run(() => updateListMembership(contactIds, listId, action))
   );
 
+  server.registerTool(
+    'cc_clear_list_start',
+    {
+      title: 'Clear a list (background job)',
+      description:
+        'Removes ALL current members from a list — list membership only, contacts are NOT deleted from the account and stay on any other lists they belong to. Built for lists too large to fetch-and-remove within one tool call (tens of thousands to hundreds of thousands of members). Starts a background job in the mcp service and returns immediately with the job status; poll with cc_clear_list_status using the same listId. Only one job per list runs at a time. Job state is in-memory only — lost if this service redeploys or restarts mid-job.',
+      inputSchema: {
+        listId: z.string().describe('The contact list id to clear.'),
+      },
+    },
+    ({ listId }) => run(() => startClearList(listId))
+  );
+
+  server.registerTool(
+    'cc_clear_list_status',
+    {
+      title: 'Check clear-list job status',
+      description:
+        'Status of a background cc_clear_list_start job for a list: phase (fetching_members/removing/complete), totalMembers, removed so far, batch progress, and any error. Returns {status: "not_found"} if no job has been started for this listId (or the service restarted since).',
+      inputSchema: {
+        listId: z.string().describe('The contact list id.'),
+      },
+    },
+    ({ listId }) => run(() => getClearJobStatus(listId))
+  );
+
   return server;
 }
 
@@ -324,7 +357,7 @@ const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, service: 'mcp', writes: 'draft-only + explicit-id list membership' });
+  res.json({ ok: true, service: 'mcp', writes: 'draft-only + explicit-id list membership + background list-clear' });
 });
 
 app.post('/mcp/:secret', async (req, res) => {
