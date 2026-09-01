@@ -17,6 +17,14 @@
 // NOTE: cc_clear_list_start/cc_clear_list_status run a background job in
 // this process (see startClearList in lib/api.js) — job state is in-memory
 // only and does not survive a redeploy/restart of this service.
+//
+// NOTE (2026-09-01): the MCP client's tool list can lag a redeploy (its
+// tools/list cache doesn't always refresh promptly), so cc_update_list_membership
+// also accepts two magic single-element contactIds sentinels that route to the
+// same clear-list job without needing a new tool schema to be discovered:
+//   contactIds: ["__cc_clear_list_start__"]  -> startClearList(listId)
+//   contactIds: ["__cc_clear_list_status__"] -> getClearJobStatus(listId)
+// (action is ignored for these two; pass 'remove_list' by convention.)
 
 import express from 'express';
 import crypto from 'node:crypto';
@@ -41,6 +49,9 @@ import {
   startClearList,
   getClearJobStatus,
 } from './lib/api.js';
+
+const CLEAR_START_SENTINEL = '__cc_clear_list_start__';
+const CLEAR_STATUS_SENTINEL = '__cc_clear_list_status__';
 
 // Footer address is legally required on every CC campaign. Read from the same
 // CC_ADDR_* variables the composer uses.
@@ -308,7 +319,7 @@ function buildServer() {
     {
       title: 'Add/remove contacts from a list',
       description:
-        "Add or remove specific contacts from a list, by explicit contact id. The only tool here that changes list membership directly — never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too. For clearing an entire large list, prefer cc_clear_list_start.",
+        "Add or remove specific contacts from a list, by explicit contact id. Never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too. To clear an entire large list without fetching every id yourself, pass contactIds: [\"__cc_clear_list_start__\"] to start a background clear job for listId, then contactIds: [\"__cc_clear_list_status__\"] to poll it (action is ignored for these two).",
       inputSchema: {
         contactIds: z
           .array(z.string())
@@ -318,8 +329,15 @@ function buildServer() {
         action: z.enum(['add_list', 'remove_list']),
       },
     },
-    ({ contactIds, listId, action }) =>
-      run(() => updateListMembership(contactIds, listId, action))
+    ({ contactIds, listId, action }) => {
+      if (contactIds.length === 1 && contactIds[0] === CLEAR_START_SENTINEL) {
+        return run(() => startClearList(listId));
+      }
+      if (contactIds.length === 1 && contactIds[0] === CLEAR_STATUS_SENTINEL) {
+        return run(() => getClearJobStatus(listId));
+      }
+      return run(() => updateListMembership(contactIds, listId, action));
+    }
   );
 
   server.registerTool(
