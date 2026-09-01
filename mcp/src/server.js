@@ -16,15 +16,22 @@
 //
 // NOTE: cc_clear_list_start/cc_clear_list_status run a background job in
 // this process (see startClearList in lib/api.js) — job state is in-memory
-// only and does not survive a redeploy/restart of this service.
+// only and does not survive a redeploy/restart of this service. Same for
+// cc_delete_contacts_by_list_start/status (real deletion — see below).
 //
 // NOTE (2026-09-01): the MCP client's tool list can lag a redeploy (its
 // tools/list cache doesn't always refresh promptly), so cc_update_list_membership
-// also accepts two magic single-element contactIds sentinels that route to the
-// same clear-list job without needing a new tool schema to be discovered:
-//   contactIds: ["__cc_clear_list_start__"]  -> startClearList(listId)
-//   contactIds: ["__cc_clear_list_status__"] -> getClearJobStatus(listId)
-// (action is ignored for these two; pass 'remove_list' by convention.)
+// also accepts magic single-element contactIds sentinels that route to the
+// same jobs without needing a new tool schema to be discovered:
+//   contactIds: ["__cc_clear_list_start__"]    -> startClearList(listId)
+//   contactIds: ["__cc_clear_list_status__"]   -> getClearJobStatus(listId)
+//   contactIds: ["__cc_delete_list_start__"]   -> startDeleteContactsByList(listId)
+//   contactIds: ["__cc_delete_list_status__"]  -> getDeleteJobStatus(listId)
+// (action is ignored for all four; pass 'remove_list' by convention.)
+//
+// IMPORTANT: list-membership removal (clear-list) does NOT reduce the
+// account's billable contact count. Contact deletion (delete-list) does.
+// They are different operations — don't conflate them.
 
 import express from 'express';
 import crypto from 'node:crypto';
@@ -48,10 +55,14 @@ import {
   updateListMembership,
   startClearList,
   getClearJobStatus,
+  startDeleteContactsByList,
+  getDeleteJobStatus,
 } from './lib/api.js';
 
 const CLEAR_START_SENTINEL = '__cc_clear_list_start__';
 const CLEAR_STATUS_SENTINEL = '__cc_clear_list_status__';
+const DELETE_START_SENTINEL = '__cc_delete_list_start__';
+const DELETE_STATUS_SENTINEL = '__cc_delete_list_status__';
 
 // Footer address is legally required on every CC campaign. Read from the same
 // CC_ADDR_* variables the composer uses.
@@ -199,7 +210,7 @@ function buildServer() {
     {
       title: 'Get list members',
       description:
-        'Contact ids currently in a given list. Pages through the full list synchronously — for very large lists (tens of thousands+) this can exceed a single tool call\'s time budget; use cc_clear_list_start instead if the goal is to empty the list.',
+        'Contact ids currently in a given list. Pages through the full list synchronously — for very large lists (tens of thousands+) this can exceed a single tool call\'s time budget; use cc_clear_list_start (membership only) or cc_delete_contacts_by_list_start (actual deletion) instead if the goal is to empty the list.',
       inputSchema: {
         listId: z.string().describe('The contact list id.'),
       },
@@ -319,7 +330,7 @@ function buildServer() {
     {
       title: 'Add/remove contacts from a list',
       description:
-        "Add or remove specific contacts from a list, by explicit contact id. Never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too. To clear an entire large list without fetching every id yourself, pass contactIds: [\"__cc_clear_list_start__\"] to start a background clear job for listId, then contactIds: [\"__cc_clear_list_status__\"] to poll it (action is ignored for these two).",
+        "Add or remove specific contacts from a list, by explicit contact id. Never pass 'all contacts', always an explicit id array. Used by the daily-opens-cron service, but callable directly too. This does NOT delete contacts or reduce billable contact count — it only changes which list(s) a contact is on. For that, or to clear/delete an entire large list without fetching every id yourself, pass one of these single-element sentinel values as contactIds: [\"__cc_clear_list_start__\"] / [\"__cc_clear_list_status__\"] (membership removal only) or [\"__cc_delete_list_start__\"] / [\"__cc_delete_list_status__\"] (actual deletion — reduces billable count). action is ignored for sentinel calls.",
       inputSchema: {
         contactIds: z
           .array(z.string())
@@ -336,6 +347,12 @@ function buildServer() {
       if (contactIds.length === 1 && contactIds[0] === CLEAR_STATUS_SENTINEL) {
         return run(() => getClearJobStatus(listId));
       }
+      if (contactIds.length === 1 && contactIds[0] === DELETE_START_SENTINEL) {
+        return run(() => startDeleteContactsByList(listId));
+      }
+      if (contactIds.length === 1 && contactIds[0] === DELETE_STATUS_SENTINEL) {
+        return run(() => getDeleteJobStatus(listId));
+      }
       return run(() => updateListMembership(contactIds, listId, action));
     }
   );
@@ -343,9 +360,9 @@ function buildServer() {
   server.registerTool(
     'cc_clear_list_start',
     {
-      title: 'Clear a list (background job)',
+      title: 'Clear a list (background job, membership only)',
       description:
-        'Removes ALL current members from a list — list membership only, contacts are NOT deleted from the account and stay on any other lists they belong to. Built for lists too large to fetch-and-remove within one tool call (tens of thousands to hundreds of thousands of members). Starts a background job in the mcp service and returns immediately with the job status; poll with cc_clear_list_status using the same listId. Only one job per list runs at a time. Job state is in-memory only — lost if this service redeploys or restarts mid-job.',
+        'Removes ALL current members from a list — list membership only. Contacts are NOT deleted from the account, stay on any other lists they belong to, and continue counting against the account\'s billable contact total. For actually reducing contact count, use cc_delete_contacts_by_list_start instead. Built for lists too large to fetch-and-remove within one tool call. Starts a background job and returns immediately; poll with cc_clear_list_status using the same listId. Job state is in-memory only — lost if this service redeploys or restarts mid-job.',
       inputSchema: {
         listId: z.string().describe('The contact list id to clear.'),
       },
@@ -356,14 +373,40 @@ function buildServer() {
   server.registerTool(
     'cc_clear_list_status',
     {
-      title: 'Check clear-list job status',
+      title: 'Check clear-list (membership) job status',
       description:
-        'Status of a background cc_clear_list_start job for a list: phase (fetching_members/removing/complete), totalMembers, removed so far, batch progress, and any error. Returns {status: "not_found"} if no job has been started for this listId (or the service restarted since).',
+        'Status of a background cc_clear_list_start job: phase (fetching_members/removing/complete), totalMembers, removed so far, batch progress, and any error. Returns {status: "not_found"} if no job has been started for this listId (or the service restarted since).',
       inputSchema: {
         listId: z.string().describe('The contact list id.'),
       },
     },
     ({ listId }) => run(() => getClearJobStatus(listId))
+  );
+
+  server.registerTool(
+    'cc_delete_contacts_by_list_start',
+    {
+      title: 'Delete every contact on a list (reduces billable count)',
+      description:
+        'Permanently deletes every contact on a list from the account entirely — not just list membership. This is what actually reduces the number of contacts you\'re billed for. Per Constant Contact, deleted contacts do not count against the active-contact total and are recoverable only by re-adding them to a list — treat as irreversible in practice. Submits CC\'s bulk contact_delete activity by list id (no need to fetch member ids yourself) and returns immediately with an activity id; CC processes it asynchronously. Poll with cc_delete_contacts_by_list_status using the same listId.',
+      inputSchema: {
+        listId: z.string().describe('The contact list id whose members should be permanently deleted.'),
+      },
+    },
+    ({ listId }) => run(() => startDeleteContactsByList(listId))
+  );
+
+  server.registerTool(
+    'cc_delete_contacts_by_list_status',
+    {
+      title: 'Check bulk contact-deletion status',
+      description:
+        'Status of a cc_delete_contacts_by_list_start job for a list, including Constant Contact\'s own activity status for the submitted delete. Returns {status: "not_found"} if no delete has been started for this listId (or the service restarted since).',
+      inputSchema: {
+        listId: z.string().describe('The contact list id.'),
+      },
+    },
+    ({ listId }) => run(() => getDeleteJobStatus(listId))
   );
 
   return server;
@@ -375,7 +418,7 @@ const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, service: 'mcp', writes: 'draft-only + explicit-id list membership + background list-clear' });
+  res.json({ ok: true, service: 'mcp', writes: 'draft-only + explicit-id list membership + background list-clear + bulk contact deletion' });
 });
 
 app.post('/mcp/:secret', async (req, res) => {
